@@ -1,0 +1,373 @@
+---
+title: "SSP MSE Annual Data Analysis Report"
+format: html
+editor: visual
+execute: 
+  echo: false
+  warning: false
+---
+
+This report focuses on analyzing three key areas:
+
+a.  Correlation of test items
+
+b.  How accurate are coaches assessments
+
+c.  Test items discriminating between performance levels
+
+```{r}
+#| include: false
+
+library(tidyverse)
+library(GGally)
+
+df <- readxl::read_excel('data/analysis/collated_database.xlsx') 
+
+ranking <- readxl::read_excel('data/rankings/2022_P6_Collated_Rankings.xlsx') %>% 
+  janitor::clean_names() %>% 
+  mutate(academy = as.factor(academy))
+
+# str(ranking)
+
+df_2022 <- df %>% 
+  filter(year(test_date) == '2022' & class == 'P6') %>% 
+  select(test_date, dob, name, gender, academy, age, height, arm_span, 
+         seated_height, x30m:total_JS)
+
+# imputation 
+col_means <- df_2022 %>%
+  select(x30m:total_JS) %>% 
+  summarise(across(where(is.numeric), ~ mean(., na.rm = TRUE))) %>%
+  as.list()
+
+df_2022 <- df_2022 %>%
+  replace_na(col_means)
+
+# normalise rankings 
+normalised_ranking <- ranking %>% 
+  group_by(academy, gender) %>% 
+  mutate(coaches_rank =  1 - ((relative_ranking - 1) / (n() - 1))) %>% 
+  ungroup() %>% 
+  select(name, coaches_rank) 
+
+
+# remove hidden white spaces
+normalised_ranking$name <-  str_squish(str_trim(normalised_ranking$name))
+
+df_2022_merge <- merge(df_2022, normalised_ranking, by = 'name') %>% 
+    filter(name != 'Nur Iffah Amberlynn Binte Muhammad Zulhaidi')
+
+                            
+# get fitness test z scores
+# function
+z_score_calc <- function(value) {
+  (value - mean(value, na.rm = TRUE)) / sd(value, na.rm = TRUE)
+}
+
+df_2022_merge <- df_2022_merge %>% 
+  group_by(gender, test_date) %>% 
+  mutate(x30m_z = -z_score_calc(x30m),
+         x505_z = -z_score_calc(x505),
+         VJ_z = z_score_calc(VJ),
+         BB_z = z_score_calc(total_BB),
+         MS_z = z_score_calc(total_MS),
+         JS_z = z_score_calc(total_JS)) %>% 
+  ungroup()
+
+df_2022_merge <- df_2022_merge %>% 
+  rowwise() %>% 
+  mutate(fitness_rank = mean(c_across(x30m_z:JS_z), na.rm=TRUE)) %>% 
+  ungroup()
+```
+
+```{r}
+#| include: false
+
+# Simple EDA
+# Convert from wide to long format
+df_long_all <- df %>%
+  pivot_longer(cols = c(x20m, x505:total_JS:hand_grip, y_bal_avg, mbt), names_to = "test_name", values_to = "score")
+
+# Plot boxplots for each test
+ggplot(df_long_all, aes(score)) +
+  geom_boxplot() +
+  facet_wrap(~ test_name, scales = "free_x") +  # one boxplot per test
+  theme_minimal() +
+  labs(title = "Fitness Test Scores vs Coach Rankings", x = "Score", y = "Ranking")
+
+```
+
+## Summary
+
+Based on preliminary findings, there appears to be low correlation between the fitness test items. It might be useful to compare between actual performance levels rather than relying solely on rankings from selection trials.
+
+Rankings provided by coaches were unique to academies and had to be normalized to allow for comparison across cohort. Analysis shows that coaches' ranking were generally not aligned with fitness test rankings. In many cases, athletes were ranked higher by coaches, indicating that other attributes such as technical skills, psychlogical skills or sporting history might have played a part when selecting.
+
+Lastly, there is no definitive evidence to show that the fitness test conducted during orientation are able to discriminate between sporting levels at a later age. During selection trials, coaches tend to perceive athletes who end up performing well in the future more favorably. However, these rankings presented with high variability, with some athletes belonging in L2/2\* being rated poorly.
+
+## A. Correlation of test items
+
+This analysis includes data collected between 2022-2024. However, as the test battery varied slightly across the years, not all athletes completed the same set of tests. Correlation analysis was conducted using only available data for each pair of tests.
+
+We were looking to find out if there was a correlation between Y-Balance and Balance Beams. Based on preliminary findings, there appears to be low correlation (0.2).
+
+```{r}
+ggcorr(df %>% select(x20m, x505:hand_grip, y_bal_avg, mbt), 
+       label = TRUE,
+       label_size = 3,
+       hjust = 0.75, size = 3, color = "grey50")
+```
+
+## B. How Accurate Are Coaches’ Assessments?
+
+This analysis focuses on data from the 2022 orientation cohort. The two sources of data include the rankings provided by academy coaches for that time point and fitness test data (30m sprint, 505 Agility, Vertical Jump, Balance Beams, Moving Sideways and Jumping Sideways). Rankings were submitted by coaches from 7 sports (Badminton, Bowling, Netball, Shooting, Swimming, Football, Football (GK). It is important to note that these rankings were given at the time of selection trials, and some athletes who were ranked did not end up joining the academy. Hence, to allow fair comparison across sports, coach rankings were normalized.
+
+For athletes with missing fitness test data, imputation using means was used to prevent further reduction of the sample size. In addition to coach rankings, athletes were also ranked based on their overall fitness performance using z scores.
+
+**Key Finding:**
+
+There appears to be no obvious relationship between any of the tests and coach rankings. Similarly, coach rankings showed little allignment with fitness ranks.
+
+```{r}
+
+# Convert from wide to long format
+df_2022_long <- df_2022_merge %>%
+  pivot_longer(cols = c(x30m:total_JS, fitness_rank), names_to = "test_name", values_to = "score")
+
+# Plot histograms for each test
+ggplot(df_2022_long, aes(x = coaches_rank, y = score)) +
+  geom_point() +
+  geom_smooth(method = 'lm') +
+  facet_wrap(~ test_name, scales = "free_y") +  # one histogram per test
+  theme_minimal() +
+  labs(title = "Fitness Test Scores vs Coach Rankings", x = "Score", y = "Ranking")
+```
+
+Based on the correlation plot, there seems to be low correlation between coach rankings and fitness scores.
+
+```{r}
+
+ggcorr(df_2022_merge %>% 
+         select(x30m:coaches_rank, fitness_rank), 
+       label = TRUE,
+       label_size = 3,
+      hjust = 0.75, size = 3, color = "grey50")
+```
+
+This plot shows the differences between coach rankings and fitness ranks. A positive bar indicates that the athlete was ranked higher by a coach than their fitness performance would suggest. Majority of athletes were ranked more favourably by coaches. This is likely because academy selections were held separate from the orientation cohort testing. Additionally, academies seemed to include a broader range of factors in their assessments, such technical and psychological skills and sporting history.
+
+```{r}
+
+df_2022_merge <- df_2022_merge %>% 
+  mutate(rank_diff = coaches_rank - fitness_rank) # positive means coach rank better than fitness rank
+
+ggplot(df_2022_merge, aes(x = reorder(name, rank_diff), y = rank_diff)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(title = "Difference Between Coach and Test Rankings",
+       x = "Athlete", y = "Coach Rank - Test Rank") +
+  theme_minimal() +
+  coord_flip()
+```
+
+## C. Test items discriminating between performance levels
+
+```{r}
+#| include: false
+
+performance_lvl <- readxl::read_excel('data/rankings/Performance Levels.xlsx') %>% 
+  janitor::clean_names() %>% 
+  select(student_name, academy, level,  gender,sports_year_mth, sports_level,highest_sport_year_mth)
+
+
+str(performance_lvl)
+
+### clean names
+performance_lvl_cleaned <- performance_lvl %>% 
+  mutate(name = str_to_title(student_name))  %>%
+  mutate(name = name %>% 
+           str_remove("\\s*\\(.*\\)") %>% # remove anything in parenthesis
+           str_replace(',' , '') %>%  # remove commas
+           str_squish() %>% 
+           str_remove('@')) %>% 
+  select(-student_name) %>% 
+  select(name, sports_year_mth, sports_level)
+
+### handle mismatch of names 
+cleaned_namelist <- df %>% 
+  mutate(name_words = str_split(name,  "\\s+"), # return list of each word
+         name_words_sorted = map(name_words, ~sort(.x)), # apply sort function
+         name_map = map_chr(name_words_sorted, ~paste(.x, collapse = " "))) %>% # applies paste function while removing spaces
+  arrange(name) %>% 
+  select(-name_words, -name_words_sorted )
+
+cleaned_namelist_perflvl <- performance_lvl_cleaned %>% 
+  mutate(name_words = str_split(name,  "\\s+"), # return list of each word
+         name_words_sorted = map(name_words, ~sort(.x)), # apply sort function
+         name_map = map_chr(name_words_sorted, ~paste(.x, collapse = " "))) %>% # applies paste function while removing spaces
+  arrange(name) %>% 
+  select(-name_words, -name_words_sorted, -name )
+
+### merge on name map (290 unique entries, 535 total observations)
+all_namelist <- cleaned_namelist_perflvl %>% 
+  merge(cleaned_namelist, by='name_map') %>% 
+  select(-name_map)
+
+str(all_namelist)
+
+
+### clean structure
+all_namelist <- all_namelist %>% 
+  mutate(sports_level = as.factor(sports_level),
+         sports_year_mth = as.factor(sports_year_mth),
+         gender = as.factor(gender),
+         academy = as.factor(academy))
+
+```
+
+This analysis focuses on data collected during orientation. After consolidation of datasets, 290 unique athletes were identified. The distribution of L1, L1\* and L2 groups were relatively balanced. To streamline the analysis, L2\* will be combined with L2.
+
+```{r}
+#| include: false
+
+### TIDY DATA
+# get rankings 
+p6 <- all_namelist %>% 
+  filter(class == 'P6') 
+
+# imputation by means (have to split by test groups)
+col_means_2022jan <- p6 %>% 
+  filter(test_date == as.Date('2022-01-06')) %>% 
+  select(x30m:total_JS) %>% 
+  summarise(across(where(is.numeric), ~ mean(., na.rm = TRUE))) %>% 
+  as.list()
+
+jan2022 <- p6 %>%
+ filter(test_date == as.Date('2022-01-06')) %>% 
+  replace_na(col_means_2022jan)
+
+# oct23 no missing data
+oct2023 <- p6 %>%
+ filter(test_date == as.Date('2023-10-18'))
+
+col_means_2022oct <- p6 %>% 
+  filter(test_date == as.Date('2022-10-19')) %>% 
+  select(x30m:total_JS, hand_grip) %>% 
+  summarise(across(where(is.numeric), ~ mean(., na.rm = TRUE))) %>% 
+  as.list()
+
+oct2022 <- p6 %>%
+ filter(test_date == as.Date('2022-10-19')) %>% 
+  replace_na(col_means_2022oct)
+
+# nov24 no missing data
+nov2024 <- p6 %>% 
+  filter(test_date == as.Date('2024-11-05'))
+
+# recombine data 
+p6_imputed <- bind_rows(jan2022, oct2023, oct2022,nov2024)
+
+# Calculate z scores
+p6_imputed <- p6_imputed %>% 
+  group_by(gender, test_date) %>% 
+  mutate(x20m_z = -z_score_calc(x20m),
+         x30m_z = -z_score_calc(x30m),
+         x505_z = -z_score_calc(x505),
+         VJ_z = z_score_calc(VJ),
+         BB_z = z_score_calc(total_BB),
+         MS_z = z_score_calc(total_MS),
+         JS_z = z_score_calc(total_JS),
+         wall_toss_z = z_score_calc(wall_toss),
+         hand_grip_z = z_score_calc(hand_grip),
+         y_bal_z = z_score_calc(y_bal_avg)) %>% 
+    ungroup() %>% 
+  select(sports_year_mth:seated_height, x20m:y_bal_z) 
+
+# calculate fitness rank by test date
+p6_imputed <- p6_imputed %>% 
+  rowwise() %>% 
+  mutate(fitness_rank = case_when(test_date == as.Date('2022-01-06') 
+                                  ~ mean(c_across(x30m_z:JS_z)),
+                                  test_date == as.Date('2022-10-19')
+                                  ~ mean(c_across(c(x30m_z:JS_z, hand_grip_z))),
+                                  test_date == as.Date('2023-10-18') 
+                                   ~ mean(c_across(c(x20m_z, x505_z:wall_toss_z))),
+                                  TRUE ~ 
+                                    mean(c_across(c(x20m_z, x505_z:JS_z, hand_grip_z:y_bal_z))))) %>% 
+  ungroup()
+
+
+
+```
+
+```{r}
+
+### EDA
+p6_imputed %>%  
+  distinct(name, .keep_all = TRUE) %>% 
+  ggplot(aes(sports_level)) +
+  geom_bar()
+
+# combine L2* with L2
+p6_imputed <- p6_imputed %>% 
+  mutate(sports_level = case_when(sports_level == 'L2*' ~ 'L2',
+                                  TRUE ~ sports_level)) %>% 
+  mutate(sports_level = as.factor(sports_level))
+```
+
+### Fitness test items vs sport levels
+
+Most fitness test items do not show clear discrimination between sport levels based on boxplots alone. There is a slight difference in fitness test scores, however, ANOVA test results shows that there is no significant difference in fitness rankings between the three sport levels.
+
+```{r}
+
+# Convert from wide to long format
+p6_long <- p6_imputed %>%
+  pivot_longer(cols = c(x20m:hand_grip, y_bal_avg, fitness_rank), names_to = "test_name", values_to = "score")
+
+p6_long %>% 
+  ggplot(aes(sports_level, score)) +
+  geom_boxplot() +
+  facet_wrap(~test_name, scales = 'free_y') +
+  theme_minimal() +
+  labs(title = "Fitness Test Scores vs Sport Levels", x = "Sport Level", y = "Score")
+```
+
+```{r}
+# p6_imputed %>% 
+#   ggplot(aes(fitness_rank)) +
+#   geom_histogram(bins = 10)
+
+res <- aov(fitness_rank ~ sports_level, data = p6_imputed)
+
+library("report")
+report(res)
+```
+
+### Coach rankings  vs sport levels
+
+Higher sport levels tend to have a higher median coach rankings. However, the wide range indicates inconsistency with some athletes belonging to that group scoring poorly. Furthermore, the ANOVA test results shows that there is no statistically significant difference in coach rankings between the sport levels.
+
+```{r}
+
+# include ranks
+coach_rank_2022 <- merge(p6_imputed, normalised_ranking, by = 'name') 
+
+coach_rank_2022 %>% 
+  ggplot(aes(sports_level, coaches_rank)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Coach Rankings vs Sport Levels", x = "Sport Level", y = "Score")
+```
+
+```{r}
+
+
+res_coach <- aov(coaches_rank ~ sports_level, data = coach_rank_2022)
+
+report(res_coach)
+
+
+```
+
+### 
